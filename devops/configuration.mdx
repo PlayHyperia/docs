@@ -30,6 +30,10 @@ cp packages/server/.env.example packages/server/.env
 # Database (production)
 DATABASE_URL=postgresql://user:pass@host:5432/db
 
+# HMAC authority for authenticated mob-death loot (32+ bytes)
+# Every game-server authority must receive the same secret.
+# KILL_TOKEN_SECRET=replace-with-32-or-more-random-bytes
+
 # Security (REQUIRED in production/staging as of February 2026)
 JWT_SECRET=your-random-secret-key  # Generate with: openssl rand -base64 32
                                    # Throws error if not set in production/staging
