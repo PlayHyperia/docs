@@ -6,7 +6,7 @@ icon: "container"
 
 ## Overview
 
-Hyperscape uses Docker for:
+Hyperia uses Docker for:
 
 - **Asset CDN**: nginx serving game assets
 - **PostgreSQL**: Database for player data
@@ -48,7 +48,7 @@ Default connection:
 ```
 Host: localhost
 Port: 5432
-Database: hyperscape
+Database: hyperia
 User: postgres
 Password: postgres
 ```
@@ -72,7 +72,7 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: hyperscape
+      POSTGRES_DB: hyperia
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     volumes:
@@ -95,7 +95,9 @@ The server Dockerfile includes all dependencies for production deployment with N
 ```dockerfile
 # ─── Builder ────────────────────────────────────────────────────────────────
 
-FROM oven/bun:1.3.10-debian AS builder
+FROM node:22.23.2-bookworm-slim AS node-build-tools
+
+FROM oven/bun:1.3.14-debian AS builder
 
 RUN apt-get update && apt-get install -y \
     python3 make g++ pkg-config \
@@ -107,21 +109,38 @@ WORKDIR /app
 
 ENV CI=true \
     SKIP_ASSETS=true \
-    HYPERSCAPE_SKIP_BROWSER_INSTALL=true
+    HYPERIA_SKIP_BROWSER_INSTALL=true
+
+# Immutable revision from PlayHyperia/assets. Deliberate asset updates must bump
+# this build input so a production image can be reproduced after branch changes.
+ARG HYPERIA_ASSETS_REV=ef024c400b8b6139a917b2cdf589b515f6e18c8f
+
+# Vite 8 requires Node 20.19+ or 22.12+. Keep an explicit current Node binary
+# for Vite-backed scripts while Bun remains pinned for installs and the rest of
+# the build.
+COPY --from=node-build-tools /usr/local/bin/node /usr/local/bin/node
 
 # Root manifests
 COPY package.json bun.lock turbo.json tsconfig.json ./
 
-# Workspace package manifests
+# Workspace package manifests (determines dependency graph)
+COPY packages/app/package.json              ./packages/app/
+COPY packages/asset-forge/package.json      ./packages/asset-forge/
+COPY packages/contracts/package.json        ./packages/contracts/
 COPY packages/physx-js-webidl/package.json ./packages/physx-js-webidl/
 COPY packages/decimation/package.json      ./packages/decimation/
+COPY packages/duel-oracle-evm/package.json ./packages/duel-oracle-evm/
+COPY packages/duel-oracle-solana/package.json ./packages/duel-oracle-solana/
 COPY packages/impostors/package.json       ./packages/impostors/
 COPY packages/procgen/package.json         ./packages/procgen/
 COPY packages/shared/package.json          ./packages/shared/
-COPY packages/plugin-hyperscape/package.json ./packages/plugin-hyperscape/
+COPY packages/plugin-hyperia/package.json ./packages/plugin-hyperia/
+COPY packages/sim-engine/package.json      ./packages/sim-engine/
+COPY packages/vast-keeper/package.json     ./packages/vast-keeper/
 COPY packages/web3/package.json            ./packages/web3/
 COPY packages/server/package.json          ./packages/server/
 COPY packages/client/package.json          ./packages/client/
+COPY packages/website/package.json         ./packages/website/
 
 # Install hook scripts + PhysX WASM prebuilts
 COPY scripts ./scripts
@@ -134,63 +153,69 @@ COPY packages/decimation         ./packages/decimation
 COPY packages/impostors          ./packages/impostors
 COPY packages/procgen            ./packages/procgen
 COPY packages/shared             ./packages/shared
-COPY packages/plugin-hyperscape  ./packages/plugin-hyperscape
+COPY packages/plugin-hyperia     ./packages/plugin-hyperia
 COPY packages/web3               ./packages/web3
 COPY packages/server             ./packages/server
 COPY packages/client             ./packages/client
 
-# better-sqlite3's node-gyp build segfaults under QEMU cross-compilation
-# The project uses bun:sqlite / PostgreSQL, so it's safe to remove
-RUN bun -e " \
-  const fs = require('fs'); \
-  for (const f of ['packages/shared/package.json', 'package.json']) { \
-    const p = JSON.parse(fs.readFileSync(f)); \
-    delete p.dependencies?.['better-sqlite3']; \
-    delete p.devDependencies?.['better-sqlite3']; \
-    fs.writeFileSync(f, JSON.stringify(p, null, 2)); \
-  }"
+# Keep the checked-in manifests and lockfile identical so the frozen install is
+# meaningful. Native install scripts are unnecessary for the PostgreSQL-backed
+# server build and are not portable under QEMU cross-compilation.
+RUN bun install --frozen-lockfile --ignore-scripts
 
-RUN bun install --trust
+# Download game asset manifests (bypass CDN reliance on boot), verify the exact
+# immutable revision, and exclude repository metadata from the runtime image.
+RUN rm -rf packages/server/world/assets && \
+    HYPERIA_ASSETS_REV="${HYPERIA_ASSETS_REV}" bun scripts/ensure-assets.mjs && \
+    test "$(git -C packages/server/world/assets rev-parse HEAD)" = "${HYPERIA_ASSETS_REV}" && \
+    rm -rf packages/server/world/assets/.git
 
-# Download game asset manifests (bypass CDN reliance on boot)
-RUN rm -rf packages/server/world/assets && bun scripts/ensure-assets.mjs
-
-# Build workspace packages in dependency order
+# Build workspace packages in dependency order (all builds are fail-closed)
 RUN cd /app/packages/physx-js-webidl && bun run build && \
     cd /app/packages/decimation && bun run build && \
     cd /app/packages/impostors && bun run build && \
-    cd /app/packages/procgen && (bun run build || true) && \
+    cd /app/packages/procgen && bun run build && \
     cd /app/packages/shared && bun run build && \
-    cd /app/packages/plugin-hyperscape && bun run build && \
+    cd /app/packages/plugin-hyperia && bun run build && \
     cd /app/packages/web3 && bun run build && \
     cd /app/packages/server && bun run build && \
-    cd /app/packages/client && NODE_OPTIONS='--max-old-space-size=4096' bun run build:cf
+    cd /app/packages/client && bun run build:cf
 
 # ─── Runtime ────────────────────────────────────────────────────────────────
+#
+# The production server must run under real Node.js, not Bun. The bundled
+# server loads uWebSockets.js native bindings, which depend on Node's N-API
+# and fail under Bun's `node` compatibility shim.
 
-FROM oven/bun:1.3.10-debian AS runtime
+FROM node:22.23.2-trixie-slim AS runtime
 
 RUN apt-get update && apt-get install -y \
     libcairo2 libpango-1.0-0 libpangocairo-1.0-0 \
     libjpeg62-turbo libgif7 librsvg2-2 \
-    ca-certificates curl \
+    ca-certificates curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
+RUN ffmpeg -version && ffprobe -version
 
 WORKDIR /app
 
 ENV NODE_ENV=production \
-    PORT=5555 \
+    CI=true \
     SKIP_ASSETS=true \
-    HYPERSCAPE_SKIP_BROWSER_INSTALL=true
+    HYPERIA_SKIP_BROWSER_INSTALL=true \
+    HYPERIA_DATA_DIR=/app/data \
+    ELIZA_DATA_DIR_CHARACTERS=/app/data/eliza/characters \
+    DUEL_ARENA_ORACLE_STORE_PATH=/app/data/duel-arena-oracle/records.json
 
-# Package manifests from builder (has better-sqlite3 stripped)
+# Package manifests from the frozen builder dependency graph
 COPY --from=builder /app/package.json /app/bun.lock ./
+COPY --from=builder /app/scripts/node-runtime-policy.mjs /app/scripts/start-hyperia-server.mjs ./scripts/
 COPY --from=builder /app/packages/physx-js-webidl/package.json ./packages/physx-js-webidl/
 COPY --from=builder /app/packages/decimation/package.json      ./packages/decimation/
 COPY --from=builder /app/packages/impostors/package.json       ./packages/impostors/
 COPY --from=builder /app/packages/procgen/package.json         ./packages/procgen/
 COPY --from=builder /app/packages/shared/package.json          ./packages/shared/
-COPY --from=builder /app/packages/plugin-hyperscape/package.json ./packages/plugin-hyperscape/
+COPY --from=builder /app/packages/plugin-hyperia/package.json ./packages/plugin-hyperia/
 COPY --from=builder /app/packages/web3/package.json            ./packages/web3/
 COPY --from=builder /app/packages/server/package.json          ./packages/server/
 COPY --from=builder /app/packages/client/package.json          ./packages/client/
@@ -199,26 +224,26 @@ COPY --from=builder /app/packages/client/package.json          ./packages/client
 # Bun 1.3 uses per-package node_modules (not flat hoisting). Docker COPY
 # also destroys workspace symlinks. We need three things:
 #   1. Root node_modules (with .bun cache containing all resolved packages)
-#   2. Manual workspace symlinks (@hyperscape/* -> packages/*)
+#   2. Manual workspace symlinks (@hyperforge/* -> packages/*)
 #   3. Per-package node_modules for every workspace member used at runtime
 COPY --from=builder /app/node_modules ./node_modules
 
-RUN mkdir -p node_modules/@hyperscape && \
-    ln -s ../../packages/physx-js-webidl    node_modules/@hyperscape/physx-js-webidl && \
-    ln -s ../../packages/decimation         node_modules/@hyperscape/decimation && \
-    ln -s ../../packages/impostors          node_modules/@hyperscape/impostor && \
-    ln -s ../../packages/procgen            node_modules/@hyperscape/procgen && \
-    ln -s ../../packages/shared             node_modules/@hyperscape/shared && \
-    ln -s ../../packages/plugin-hyperscape  node_modules/@hyperscape/plugin-hyperscape && \
-    ln -s ../../packages/web3              node_modules/@hyperscape/web3 && \
-    ln -s ../../packages/server            node_modules/@hyperscape/server && \
-    ln -s ../../packages/client            node_modules/@hyperscape/client
+RUN mkdir -p node_modules/@hyperforge && \
+    ln -s ../../packages/physx-js-webidl    node_modules/@hyperforge/physx-js-webidl && \
+    ln -s ../../packages/decimation         node_modules/@hyperforge/decimation && \
+    ln -s ../../packages/impostors          node_modules/@hyperforge/impostor && \
+    ln -s ../../packages/procgen            node_modules/@hyperforge/procgen && \
+    ln -s ../../packages/shared             node_modules/@hyperforge/shared && \
+    ln -s ../../packages/plugin-hyperia     node_modules/@hyperforge/plugin-hyperia && \
+    ln -s ../../packages/web3              node_modules/@hyperforge/web3 && \
+    ln -s ../../packages/server            node_modules/@hyperforge/server && \
+    ln -s ../../packages/client            node_modules/@hyperforge/client
 
 COPY --from=builder /app/packages/server/node_modules            ./packages/server/node_modules
 COPY --from=builder /app/packages/shared/node_modules            ./packages/shared/node_modules
 COPY --from=builder /app/packages/procgen/node_modules           ./packages/procgen/node_modules
 COPY --from=builder /app/packages/impostors/node_modules         ./packages/impostors/node_modules
-COPY --from=builder /app/packages/plugin-hyperscape/node_modules ./packages/plugin-hyperscape/node_modules
+COPY --from=builder /app/packages/plugin-hyperia/node_modules    ./packages/plugin-hyperia/node_modules
 COPY --from=builder /app/packages/web3/node_modules              ./packages/web3/node_modules
 COPY --from=builder /app/packages/client/node_modules            ./packages/client/node_modules
 
@@ -228,46 +253,71 @@ COPY --from=builder /app/packages/decimation/dist       ./packages/decimation/di
 COPY --from=builder /app/packages/impostors/dist        ./packages/impostors/dist
 COPY --from=builder /app/packages/procgen/dist          ./packages/procgen/dist
 COPY --from=builder /app/packages/shared/build          ./packages/shared/build
-COPY --from=builder /app/packages/plugin-hyperscape/dist ./packages/plugin-hyperscape/dist
+COPY --from=builder /app/packages/plugin-hyperia/dist  ./packages/plugin-hyperia/dist
 COPY --from=builder /app/packages/web3/dist             ./packages/web3/dist
 COPY --from=builder /app/packages/server/dist           ./packages/server/dist
-COPY --from=builder /app/packages/server/src            ./packages/server/src
+COPY --from=builder /app/packages/server/scripts/register-hooks.mjs \
+    /app/packages/server/scripts/node-esm-hooks.mjs      ./packages/server/scripts/
+COPY --from=builder /app/packages/server/src/database/migrations \
+    ./packages/server/src/database/migrations
 COPY --from=builder /app/packages/server/world          ./packages/server/world
 COPY --from=builder /app/packages/client/dist           ./packages/client/dist
 
-RUN mkdir -p ./packages/server/public/live
+RUN mkdir -p \
+    /app/assets \
+    /app/data/eliza/characters \
+    /app/data/duel-arena-oracle \
+    /app/heap-snapshots \
+    /app/packages/server/public/live && \
+    chmod -R a=rX /app/packages/server/src/database/migrations && \
+    chown -R node:node \
+    /app/assets \
+    /app/data \
+    /app/heap-snapshots \
+    /app/packages/server/public/live \
+    /app/packages/server/world/assets/manifests
+
+USER node
 
 EXPOSE 5555
 
-CMD ["bun", "run", "start"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=5 \
+    CMD curl -fsS http://localhost:${PORT:-5555}/status >/dev/null || exit 1
+
+CMD ["node", "--import", "/app/packages/server/scripts/register-hooks.mjs", "/app/scripts/start-hyperia-server.mjs"]
 ```
 
-**Key Features (Updated March 15, 2026):**
-- **Bun 1.3.10**: Upgraded from 1.1.38 for Vite 6+ compatibility
+**Key Features (Updated November 2026):**
+- **Node.js 22.23.2**: Pinned exact version; runtime uses Node (not Bun) for uWebSockets.js N-API compatibility
+- **Bun 1.3.14**: Upgraded from 1.3.10 for latest stability and Vite 8+ compatibility
+- **`--ignore-scripts`**: Native install lifecycle scripts skipped (not portable under QEMU cross-compilation)
+- **`HYPERIA_ASSETS_REV` ARG**: Immutable asset revision pinned at build time; bump to update assets
+- **ffmpeg in runtime**: System ffmpeg installed in the production image for streaming
+- **Non-root `node` user**: Runtime runs as the `node` user for security
+- **`@hyperforge` namespace**: Workspace symlinks use `@hyperforge/*`
+- **Fail-closed builds**: All workspace builds are fail-closed; partial TypeScript emit is rejected
+- **Minimal server source**: Only migration SQL files and scripts are copied (not full `src/`)
 - **Multi-Service Support**: Builds both client and server in single image
 - **Workspace Symlinks**: Manually recreated after Docker COPY (COPY flattens symlinks)
-- **Per-Package node_modules**: Bun 1.3 doesn't hoist all deps - explicitly copied
-- **better-sqlite3 Removal**: Stripped from manifests before install (segfaults under QEMU)
-- **Manifest Embedding**: Copies cleaned manifests from builder stage
-- **Client Build**: Includes `packages/client/dist` for multi-service deployments
+- **Per-Package node_modules**: Bun 1.3 doesn't hoist all deps — explicitly copied
 
 **Docker Build Workarounds:**
 
-1. **better-sqlite3 QEMU Crash**: Node-gyp native build segfaults under QEMU cross-compilation
-   - Solution: Strip from package.json before install
-   - Project uses bun:sqlite and PostgreSQL instead
+1. **Native install scripts skipped**: `--ignore-scripts` replaces the old `better-sqlite3` stripping approach
+   - Cleaner and more portable than patching package.json
+   - Project uses PostgreSQL; native modules are not needed
 
 2. **Workspace Symlinks Destroyed**: Docker COPY flattens symlinks to regular files
-   - Solution: Manually recreate `node_modules/@hyperscape/*` symlinks in runtime stage
+   - Solution: Manually recreate `node_modules/@hyperforge/*` symlinks in runtime stage
    - Bun workspace resolution requires these symlinks
 
 3. **Bun 1.3 Per-Package node_modules**: Bun 1.3 changed dependency resolution
    - Solution: Explicitly copy per-package node_modules from builder
    - Packages like three, dotenv end up in `packages/*/node_modules/`
 
-4. **Procgen Build Errors**: Type errors cause partial emit
-   - Solution: `(bun run build || true)` continues build with partial output
-   - Downstream consumers still get sufficient artifacts
+4. **Node.js runtime required**: uWebSockets.js uses Node N-API bindings
+   - Runtime stage uses `node:22.23.2-trixie-slim` (Debian Trixie for GLIBC 2.38+)
+   - Builder stage uses Bun for fast installs and builds
 
 ### Vast.ai Keeper Image
 
@@ -320,15 +370,15 @@ CMD ["bun", "run", "start"]
 
 ```bash
 # Stop containers
-docker stop hyperscape-postgres
-docker rm hyperscape-postgres
+docker stop hyperia-postgres
+docker rm hyperia-postgres
 
 # Remove volumes
-docker volume rm hyperscape-postgres-data
+docker volume rm hyperia-postgres-data
 docker volume rm server_postgres-data
 
 # Verify
-docker volume ls | grep hyperscape
+docker volume ls | grep hyperia
 
 # Restart
 bun run dev
@@ -337,8 +387,8 @@ bun run dev
 ### Reset CDN
 
 ```bash
-docker stop hyperscape-cdn
-docker rm hyperscape-cdn
+docker stop hyperia-cdn
+docker rm hyperia-cdn
 bun run cdn:up
 ```
 
@@ -385,6 +435,6 @@ def456         nginx:alpine    0.0.0.0:8080->80/tcp
 View container logs:
 
 ```bash
-docker logs hyperscape-postgres
-docker logs hyperscape-cdn
+docker logs hyperia-postgres
+docker logs hyperia-cdn
 ```
