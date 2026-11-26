@@ -23,6 +23,118 @@ rss: true
   Subscribe via [RSS](/changelog/rss.xml) for updates.
 </Info>
 
+<Update label="SOL Duel Stream Launch & Infrastructure Hardening" description="November 2026" date="2026-11-26">
+
+### 🚀 SOL Duel Stream Launch (PR #1280)
+
+Major infrastructure hardening for the SOL duel streaming launch, including exact-SHA CI-gated Railway deployment, pinned Node.js runtime, Docker security improvements, and integrated Hyperbet stack support.
+
+#### Runtime Version Pinning
+
+- **`.node-version` and `.nvmrc`**: Both pinned to `22.23.2` — all CI workflows now use `node-version-file: .node-version`
+- **Bun 1.3.14**: Upgraded from 1.3.10 across all CI workflows and Dockerfiles
+- **Consistent toolchain**: Every workflow (CI, build-app, deploy-pages, deploy-railway, integration, security, typecheck, claude, claude-code-review) uses the same pinned versions
+
+#### Exact-SHA CI-Gated Railway Deployment
+
+The Railway deployment workflow was completely overhauled:
+
+- **Trigger changed**: `push` → `workflow_run` on CI success — Railway only deploys commits that passed CI
+- **Exact-SHA deployment**: Uses `serviceInstanceDeployV2` GraphQL mutation with explicit `commitSha` parameter
+- **Deployment policy script**: `scripts/railway-deployment-policy.mjs` with full test coverage (`railway-deployment-policy.test.mjs`)
+- **Serialized deployments**: `concurrency: railway-deployment` with `cancel-in-progress: false`
+- **Commit status tracking**: Marks each commit `pending` → `success`/`failure` via GitHub Statuses API
+- **`sync-railway-status.yml`**: Refactored from `workflow_run` trigger to `workflow_call` reusable workflow
+
+#### Docker Security & Reproducibility
+
+- **Non-root user**: Runtime image now runs as `node` user (not root)
+- **Node.js 22.23.2**: Pinned exact version in both builder (`node:22.23.2-bookworm-slim`) and runtime (`node:22.23.2-trixie-slim`)
+- **`--ignore-scripts`**: Replaces the old `better-sqlite3` stripping approach — cleaner and more portable
+- **`HYPERIA_ASSETS_REV` ARG**: Immutable asset revision pinned at build time for reproducible images
+- **ffmpeg in runtime**: System ffmpeg installed and verified (`ffmpeg -version && ffprobe -version`)
+- **`@hyperforge` namespace**: Workspace symlinks corrected from `@hyperia` to `@hyperforge`
+- **Fail-closed builds**: All workspace builds are fail-closed; `(bun run build || true)` pattern removed
+- **Minimal server source**: Only migration SQL files and scripts copied (not full `src/`)
+- **Data directories**: `/app/data/eliza/characters`, `/app/data/duel-arena-oracle`, `/app/heap-snapshots` created with correct ownership
+- **HEALTHCHECK**: Added `--start-period=45s` health check using `/status` endpoint
+
+#### Integrated SOL Duel + Hyperbet Stack
+
+New environment variables for the integrated Hyperbet SOL backend:
+
+```bash
+DUEL_WITH_HYPERBET=false              # Enable sibling Hyperbet backend
+DUEL_HYPERBET_ROOT=                   # Optional explicit monorepo location
+DUEL_HYPERBET_API_URL=http://localhost:8080  # Hyperbet backend origin
+DUEL_BETTING_FEED_ACCESS_TOKEN=       # Ephemeral if blank; persist for continuity
+```
+
+#### New Environment Variables
+
+```bash
+# HMAC authority for authenticated mob-death loot
+KILL_TOKEN_SECRET=replace-with-32-or-more-random-bytes
+
+# Streaming canonical source (HLS-first)
+STREAMING_CANONICAL_PLATFORM=hls
+STREAMING_CANONICAL_SOURCE_URL=/live/stream.m3u8
+STREAMING_REQUIRE_LIVE_AUDIO=false
+
+# Database recovery timeouts
+POSTGRES_CONNECTION_TIMEOUT_MS=10000
+POSTGRES_STATEMENT_TIMEOUT_MS=15000
+POSTGRES_QUERY_TIMEOUT_MS=20000
+```
+
+#### CI Test Gates
+
+New verification steps added to CI:
+
+```bash
+bun run eliza:runtime-pins          # Verify pinned ElizaOS runtime graph
+bun run eliza:runtime-pins:test
+bun run eliza:runtime-smoke
+bun run assets:verify:duel-arena-layout
+bun run assets:verify:preparation-topology
+bun run assets:verify:town-collision
+bun run stream:runtime:test
+bun run physics:runtime:test
+bun run stream:browser-performance:test
+bun run equipment:active-combat-orientation:test
+bun run duel:smoke:policy:test
+```
+
+Integration tests now include:
+- **`duel-launch-smoke`**: Full clean install → build → launch → render → verify → cleanup
+- **`server-container-smoke`**: Canonical `Dockerfile.server` build → migrate → probe → SIGTERM
+
+#### Secret Scanning
+
+New `.gitleaks.toml` with allowlists for:
+- Public Solana authentication-method discriminator (`authMethod: "sol-wallet-signature-v1"`)
+- Public sculpt-v2 bay terrain chunk fixture label (`chunkKey: "sculpt-v2-bay"`)
+
+#### DuelCombatAI Config Change
+
+`useLlmTactics` field renamed to `tacticalStrategy` in `DuelCombatConfig`:
+
+```typescript
+// Before
+useLlmTactics: false  // Use LLM for strategy planning
+
+// After
+tacticalStrategy: undefined  // Strict strategy committed during private preparation
+```
+
+#### `.dockerignore` Updates
+
+- Test files (`__tests__/`, `*.test.*`, `*.spec.*`, `*.e2e.*`) excluded from Docker builds
+- Diagnostic artifacts (`artifacts/`, `progress-videos/`, `heap-snapshots/`, `*.cpuprofile`, `*.heapsnapshot`) excluded
+- Package manifests for non-server packages now included (only `package.json`, not full directories)
+
+</Update>
+
 <Update label="Dependency Updates" description="June 2026" date="2026-06-03">
 
 ### 📦 Major Dependency Updates (June 3, 2026)
