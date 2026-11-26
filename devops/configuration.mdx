@@ -78,28 +78,37 @@ LIVEKIT_API_KEY=your-livekit-key
 LIVEKIT_API_SECRET=your-livekit-secret
 LIVEKIT_URL=wss://your-livekit-server
 
-# RTMP Streaming (Multi-Platform)
+# ============================================================================
+# OPTIONAL EXTERNAL STREAM FANOUT
+# ============================================================================
+# Do not configure a destination until the exact launch channel is approved.
+# Never commit stream keys or private/signed player URLs.
+
 # Twitch
-TWITCH_STREAM_KEY=live_123456789_abcdefghij
-TWITCH_RTMP_URL=rtmp://live.twitch.tv/app  # Optional override
+TWITCH_STREAM_KEY=
+TWITCH_STREAM_URL=
 
-# Kick (uses RTMPS - commit 5dbd239, Feb 26 2026)
-KICK_STREAM_KEY=your-kick-stream-key
-KICK_RTMP_URL=rtmps://fa723fc1b171.global-contribute.live-video.net/app  # Fixed IVS endpoint
+# Kick
+KICK_STREAM_KEY=
+KICK_RTMP_URL=
 
-# X/Twitter
-X_STREAM_KEY=your-x-stream-key
-X_RTMP_URL=rtmp://sg.pscp.tv:80/x
+# X
+X_STREAM_KEY=
+X_RTMP_URL=
 
-# YouTube (DEPRECATED - removed from default destinations, Feb 26 2026)
-# Explicitly disabled to prevent stale keys from being used
-# Set YOUTUBE_STREAM_KEY="" to disable
+# YouTube
 YOUTUBE_STREAM_KEY=
-YOUTUBE_RTMP_URL=rtmp://a.rtmp.youtube.com/live2
+YOUTUBE_STREAM_URL=
 
-# Streaming Timing (commit 7f1b1fd, Feb 26 2026)
-STREAMING_CANONICAL_PLATFORM=twitch  # Changed from youtube to twitch (lower latency)
-STREAMING_PUBLIC_DELAY_MS=0          # Changed from 12000ms to 0ms for live betting
+# Bettor-facing source. The integrated launcher sets the exact absolute HLS URL
+# for both Hyperia and Hyperbet; these defaults describe standalone operation.
+STREAMING_CANONICAL_PLATFORM=hls
+STREAMING_CANONICAL_SOURCE_URL=/live/stream.m3u8
+# STREAMING_PUBLIC_DELAY_MS=4000
+
+# Require the encoder to use the browser's live PulseAudio monitor instead of
+# generated silence in local/staging launch checks. Production always requires it.
+STREAMING_REQUIRE_LIVE_AUDIO=false
 
 # Streaming Quality Settings (commit 4c630f12, Feb 26 2026)
 # Low latency mode (zerolatency tune, 2x buffer) vs balanced mode (film tune, 4x buffer)
