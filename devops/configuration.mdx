@@ -279,6 +279,47 @@ if (enablePerpsOracle) {
 }
 ```
 
+## Integrated SOL Duel + Hyperbet Stack
+
+Use these variables to enable the sibling Hyperbet SOL backend alongside the duel stack:
+
+```bash
+# Enable the sibling Hyperbet SOL backend, browser app, and keeper.
+DUEL_WITH_HYPERBET=false
+
+# Optional explicit monorepo location. When blank, the launcher checks the
+# sibling hyperbet-solana-implementation and hyperbet directories.
+DUEL_HYPERBET_ROOT=
+
+# Local backend origin used by the browser app (must remain loopback when the
+# launcher owns the backend process).
+DUEL_HYPERBET_API_URL=http://localhost:8080
+
+# Persist this high-entropy secret in the runtime secret store when continuity
+# across launcher restarts is required. If blank, the launcher generates an
+# ephemeral 32-byte credential and passes it only to Hyperia and the keeper.
+DUEL_BETTING_FEED_ACCESS_TOKEN=
+```
+
+Run the integrated stack with:
+
+```bash
+bun run duel
+DUEL_WITH_HYPERBET=true bun run duel
+```
+
+See [docs/duel-stack.md](https://github.com/PlayHyperia/hyperforge/blob/main/docs/duel-stack.md) for full documentation on the duel launcher, streaming outputs, and verification commands.
+
+## Database Timeout Configuration
+
+Bounded database recovery settings. Keep query timeout strictly above statement timeout:
+
+```bash
+POSTGRES_CONNECTION_TIMEOUT_MS=10000   # Connection acquisition timeout (default: 10s)
+POSTGRES_STATEMENT_TIMEOUT_MS=15000    # Per-statement execution timeout (default: 15s)
+POSTGRES_QUERY_TIMEOUT_MS=20000        # Full query timeout including retries (default: 20s)
+```
+
 ## Client Environment
 
 ### Required
