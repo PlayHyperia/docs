@@ -131,7 +131,7 @@ export const GAME_URL = 'https://hyperscape.gg';
   
   <Step title="Configure build">
     Set build command: `bun run build`
-    Set start command: `bun start`
+    Set start command: `node --import /app/packages/server/scripts/register-hooks.mjs /app/scripts/start-hyperia-server.mjs`
   </Step>
   
   <Step title="Add PostgreSQL">
@@ -142,6 +142,22 @@ export const GAME_URL = 'https://hyperscape.gg';
     Add all required server environment variables.
   </Step>
 </Steps>
+
+### Exact-SHA CI-Gated Deployment
+
+The Railway deployment workflow (`deploy-railway.yml`) now uses an exact-SHA CI-gated policy:
+
+- **Trigger**: Fires on `workflow_run` completion of the CI workflow (not on direct push)
+- **Exact-SHA verification**: Only deploys the exact commit SHA that passed CI — never a branch tip
+- **Serialized**: `concurrency: railway-deployment` with `cancel-in-progress: false` prevents concurrent deployments
+- **Commit status tracking**: Sets GitHub commit status to `pending` before deploy and `success`/`failure` after
+- **`serviceInstanceDeployV2` mutation**: Uses the newer Railway GraphQL mutation that accepts an explicit `commitSha`
+
+This means a push to `main` only deploys if:
+1. The CI workflow for that exact commit completes successfully
+2. No other Railway deployment is in progress
+
+For manual deployments (e.g., rollbacks), use `workflow_dispatch` with an optional `deploy_ref` to specify a commit SHA or tag.
 
 ## Cloudflare Pages Deployment
 
